@@ -1,0 +1,36 @@
+# https://dart.dev/tools/private-files
+# Created by `dart pub`
+.dart_tool/
+
+# Dart/pub
+.packages
+build/
+doc/api/
+
+# Library package: lock file is not committed
+pubspec.lock
+
+# Native build output (CMake/Ninja) + compiled libraries
+native/usermedia_ffi/build/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.so
+*.dylib
+
+# Generated media / capture artifacts
+*.bmp
+*.h264
+*.wav
+*.y4m
+frame.*
+tool_probe.dart
+
+# Editor / OS
+.idea/
+*.iml
+.DS_Store
+Thumbs.db

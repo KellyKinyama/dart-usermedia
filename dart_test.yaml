@@ -1,0 +1,12 @@
+tags:
+  native:
+    # Requires the native usermedia_ffi shared library to be built.
+    # See native/usermedia_ffi/CMakeLists.txt.
+  camera:
+    # Also requires a connected camera; the test self-skips when absent.
+  microphone:
+    # Also requires a capture device; the test self-skips when absent.
+  screen:
+    # Also requires a display; the test self-skips when absent.
+  h264:
+    # Requires the native library's Media Foundation H.264 encoder.

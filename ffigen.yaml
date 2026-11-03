@@ -1,0 +1,27 @@
+# ffigen configuration for the usermedia_ffi C ABI.
+#
+# Regenerate bindings after changing the native header:
+#   dart run ffigen --config ffigen.yaml
+#
+# Requires LLVM/libclang available on PATH (see ffigen docs).
+name: UserMediaBindings
+description: Low-level FFI bindings for the native usermedia_ffi shim.
+output: 'lib/src/ffi/bindings.g.dart'
+headers:
+  entry-points:
+    - 'native/usermedia_ffi/include/usermedia_ffi.h'
+  include-directives:
+    - '**usermedia_ffi.h'
+functions:
+  include:
+    - 'um_.*'
+typedefs:
+  include:
+    - 'um_.*'
+preamble: |
+  // GENERATED CODE - DO NOT MODIFY BY HAND.
+  // Regenerate with: dart run ffigen --config ffigen.yaml
+  // ignore_for_file: type=lint, unused_element, camel_case_types
+comments:
+  style: any
+  length: full
