@@ -277,6 +277,28 @@ void um_screen_close(um_screen* scr) {
 
 }  // extern "C"
 
+#elif defined(__ANDROID__)  // --- screen capture (not available via NDK) -----
+// Android screen capture uses MediaProjection, which is a Java/Kotlin API
+// requiring an Activity to request permission — there is no NDK equivalent, so
+// this reports no screens. A real implementation needs a JNI bridge in the
+// host app. NB: precedes the X11 branch because Android also defines __linux__.
+
+struct um_screen {};
+
+extern "C" {
+int32_t um_screen_count(void) { return 0; }
+int32_t um_screen_name(int32_t, char*, int32_t) { return -1; }
+int32_t um_screen_id(int32_t, char*, int32_t) { return -1; }
+um_screen* um_screen_open(int32_t, int32_t, int32_t) { return nullptr; }
+void um_screen_format(um_screen*, int32_t* w, int32_t* h, int32_t* s) {
+  if (w) *w = 0;
+  if (h) *h = 0;
+  if (s) *s = 0;
+}
+int32_t um_screen_read(um_screen*, uint8_t*, int32_t) { return -1; }
+void um_screen_close(um_screen*) {}
+}  // extern "C"
+
 #elif defined(__linux__)  // --- X11 capture -----------------------------------
 
 #include <X11/Xlib.h>

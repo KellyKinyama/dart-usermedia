@@ -11,20 +11,36 @@ reached through `dart:ffi`.
 
 ## Status
 
-| Capability | Backend | Windows | macOS | Linux |
-| --- | --- | :-: | :-: | :-: |
-| Camera (`getUserMedia`) | Media Foundation / V4L2 | ✅ | — | ✅ |
-| Microphone (`getUserMedia`) | WASAPI / ALSA | ✅ | — | ✅ |
-| Screen (`getDisplayMedia`) | DXGI Desktop Duplication / X11 | ✅ | — | ✅ |
-| H.264 encoding | Media Foundation MFT | ✅ | — | — |
-| Synthetic test drivers | pure Dart | ✅ | ✅ | ✅ |
+| Capability | Backend | Windows | macOS | Linux | Android |
+| --- | --- | :-: | :-: | :-: | :-: |
+| Camera (`getUserMedia`) | MF / V4L2 / Camera2 NDK | ✅ | — | ✅ | 🔨 |
+| Microphone (`getUserMedia`) | WASAPI / ALSA / AAudio | ✅ | — | ✅ | 🔨 |
+| Screen (`getDisplayMedia`) | DXGI / X11 / — | ✅ | — | ✅ | — |
+| H.264 encoding | Media Foundation MFT | ✅ | — | — | — |
+| Synthetic test drivers | pure Dart | ✅ | ✅ | ✅ | ✅ |
+
+✅ = verified with real capture · 🔨 = builds + links, not yet runtime-tested
+· — = not implemented.
 
 Linux backends use V4L2 (camera, YUYV→RGB32), ALSA (microphone, PCM16), and
 X11 `XGetImage` (screen, BGRA). Build the `.so` with
 [native/scripts/build-linux.sh](native/scripts/build-linux.sh) (needs
-`build-essential cmake libasound2-dev libx11-dev`). macOS and H.264 encoding on
+`build-essential cmake libasound2-dev libx11-dev`).
+
+Android backends use NDK **Camera2** (camera, YUV_420_888→RGB32) and **AAudio**
+(microphone, PCM16); screen capture needs Java **MediaProjection** (no NDK API)
+so it's unimplemented. The host app must hold the `CAMERA` / `RECORD_AUDIO`
+runtime permissions before opening a device. Cross-compile the per-ABI `.so`
+with [native/scripts/build-android.ps1](native/scripts/build-android.ps1)
+(needs the Android NDK). macOS and H.264 encoding on
 Linux remain future work; where a backend is absent the shim compiles as a
 no-op stub and the pure-Dart core + test drivers still work.
+
+## Documentation
+
+Engineering docs live in [docs/](docs/): [architecture](docs/ARCHITECTURE.md),
+[platforms](docs/PLATFORMS.md), [codecs](docs/CODECS.md), and
+[testing](docs/TESTING.md).
 
 ## Usage
 

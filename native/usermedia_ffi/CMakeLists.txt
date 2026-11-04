@@ -99,6 +99,11 @@ if(WIN32)
   # DXGI Desktop Duplication (screen.cc) + H.264 encoder MFT (encoder.cc).
   target_link_libraries(usermedia_ffi PRIVATE
     mfplat mf mfreadwrite mfuuid wmcodecdspuuid shlwapi ole32 d3d11 dxgi)
+elseif(ANDROID)
+  # Camera2 NDK (camera.cc) + AAudio (mic.cc). Screen is a stub (MediaProjection
+  # is Java-only). Must precede the UNIX branch: Android also defines __linux__.
+  target_link_libraries(usermedia_ffi PRIVATE
+    camera2ndk mediandk aaudio android log)
 elseif(UNIX AND NOT APPLE)
   # V4L2 (camera.cc, headers-only via libc) + ALSA (mic.cc) + X11 (screen.cc).
   find_package(ALSA REQUIRED)

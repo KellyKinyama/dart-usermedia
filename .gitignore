@@ -34,3 +34,5 @@ tool_probe.dart
 *.iml
 .DS_Store
 Thumbs.db
+
+native/usermedia_ffi/build-android*/

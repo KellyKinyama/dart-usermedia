@@ -305,6 +305,235 @@ void um_camera_close(um_camera* cam) {
 
 }  // extern "C"
 
+#elif defined(__ANDROID__)  // --- Camera2 NDK -------------------------------
+// NB: Android also defines __linux__, so this branch must precede the V4L2 one.
+// Requires the host app to hold the CAMERA runtime permission before open.
+
+#include <camera/NdkCameraDevice.h>
+#include <camera/NdkCameraManager.h>
+#include <camera/NdkCameraMetadata.h>
+#include <media/NdkImage.h>
+#include <media/NdkImageReader.h>
+#include <unistd.h>
+
+#include <mutex>
+#include <string>
+#include <vector>
+
+namespace {
+
+int clamp8(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
+
+struct DeviceEntry {
+  std::string id;
+};
+
+std::mutex g_devices_mu;
+std::vector<DeviceEntry> g_devices;
+
+void RefreshDevices() {
+  std::vector<DeviceEntry> devs;
+  ACameraManager* mgr = ACameraManager_create();
+  if (mgr) {
+    ACameraIdList* list = nullptr;
+    if (ACameraManager_getCameraIdList(mgr, &list) == ACAMERA_OK && list) {
+      for (int i = 0; i < list->numCameras; i++) {
+        devs.push_back({list->cameraIds[i]});
+      }
+      ACameraManager_deleteCameraIdList(list);
+    }
+    ACameraManager_delete(mgr);
+  }
+  std::lock_guard<std::mutex> lk(g_devices_mu);
+  g_devices = std::move(devs);
+}
+
+int32_t CopyUtf8(const std::string& s, char* buf, int32_t buf_len) {
+  if (!buf || buf_len <= 0) return -1;
+  int32_t n = static_cast<int32_t>(s.size());
+  if (n > buf_len - 1) n = buf_len - 1;
+  memcpy(buf, s.data(), static_cast<size_t>(n));
+  buf[n] = '\0';
+  return n;
+}
+
+void onDisconnected(void*, ACameraDevice*) {}
+void onError(void*, ACameraDevice*, int) {}
+void onSessionReady(void*, ACameraCaptureSession*) {}
+void onSessionActive(void*, ACameraCaptureSession*) {}
+void onSessionClosed(void*, ACameraCaptureSession*) {}
+
+}  // namespace
+
+struct um_camera {
+  ACameraManager* mgr = nullptr;
+  ACameraDevice* device = nullptr;
+  AImageReader* reader = nullptr;
+  ANativeWindow* window = nullptr;
+  ACaptureSessionOutputContainer* outputs = nullptr;
+  ACaptureSessionOutput* output = nullptr;
+  ACameraOutputTarget* target = nullptr;
+  ACaptureRequest* request = nullptr;
+  ACameraCaptureSession* session = nullptr;
+  int32_t width = 0;
+  int32_t height = 0;
+  int32_t size = 0;  // RGB32 output bytes
+};
+
+extern "C" {
+
+int32_t um_camera_count(void) {
+  RefreshDevices();
+  std::lock_guard<std::mutex> lk(g_devices_mu);
+  return static_cast<int32_t>(g_devices.size());
+}
+
+int32_t um_camera_name(int32_t index, char* buf, int32_t buf_len) {
+  std::lock_guard<std::mutex> lk(g_devices_mu);
+  if (index < 0 || index >= static_cast<int32_t>(g_devices.size())) return -1;
+  return CopyUtf8(g_devices[index].id, buf, buf_len);
+}
+
+int32_t um_camera_id(int32_t index, char* buf, int32_t buf_len) {
+  return um_camera_name(index, buf, buf_len);
+}
+
+um_camera* um_camera_open(int32_t index, int32_t width, int32_t height) {
+  std::string id;
+  {
+    RefreshDevices();
+    std::lock_guard<std::mutex> lk(g_devices_mu);
+    if (index < 0 || index >= static_cast<int32_t>(g_devices.size())) {
+      return nullptr;
+    }
+    id = g_devices[index].id;
+  }
+  const int w = width > 0 ? width : 640;
+  const int h = height > 0 ? height : 480;
+
+  auto* cam = new um_camera();
+  cam->width = w;
+  cam->height = h;
+  cam->size = w * h * 4;
+  cam->mgr = ACameraManager_create();
+  if (!cam->mgr) {
+    um_camera_close(cam);
+    return nullptr;
+  }
+
+  if (AImageReader_new(w, h, AIMAGE_FORMAT_YUV_420_888, 2, &cam->reader) !=
+          AMEDIA_OK ||
+      AImageReader_getWindow(cam->reader, &cam->window) != AMEDIA_OK) {
+    um_camera_close(cam);
+    return nullptr;
+  }
+  ANativeWindow_acquire(cam->window);
+
+  ACameraDevice_StateCallbacks devCb{nullptr, onDisconnected, onError};
+  if (ACameraManager_openCamera(cam->mgr, id.c_str(), &devCb, &cam->device) !=
+      ACAMERA_OK) {
+    um_camera_close(cam);
+    return nullptr;
+  }
+
+  if (ACaptureSessionOutputContainer_create(&cam->outputs) != ACAMERA_OK ||
+      ACaptureSessionOutput_create(cam->window, &cam->output) != ACAMERA_OK ||
+      ACaptureSessionOutputContainer_add(cam->outputs, cam->output) !=
+          ACAMERA_OK ||
+      ACameraDevice_createCaptureRequest(cam->device, TEMPLATE_PREVIEW,
+                                         &cam->request) != ACAMERA_OK ||
+      ACameraOutputTarget_create(cam->window, &cam->target) != ACAMERA_OK ||
+      ACaptureRequest_addTarget(cam->request, cam->target) != ACAMERA_OK) {
+    um_camera_close(cam);
+    return nullptr;
+  }
+
+  ACameraCaptureSession_stateCallbacks sesCb{nullptr, onSessionClosed,
+                                             onSessionReady, onSessionActive};
+  if (ACameraDevice_createCaptureSession(cam->device, cam->outputs, &sesCb,
+                                         &cam->session) != ACAMERA_OK ||
+      ACameraCaptureSession_setRepeatingRequest(cam->session, nullptr, 1,
+                                                &cam->request, nullptr) !=
+          ACAMERA_OK) {
+    um_camera_close(cam);
+    return nullptr;
+  }
+  return cam;
+}
+
+void um_camera_format(um_camera* cam, int32_t* width, int32_t* height,
+                      int32_t* size) {
+  if (!cam) return;
+  if (width) *width = cam->width;
+  if (height) *height = cam->height;
+  if (size) *size = cam->size;
+}
+
+int32_t um_camera_read(um_camera* cam, uint8_t* dst, int32_t dst_len) {
+  if (!cam || !cam->reader || !dst) return -1;
+
+  AImage* image = nullptr;
+  for (int attempts = 0; attempts < 1000; attempts++) {
+    media_status_t st = AImageReader_acquireLatestImage(cam->reader, &image);
+    if (st == AMEDIA_OK && image) break;
+    if (st == AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE) {
+      usleep(2000);
+      continue;
+    }
+    return -1;
+  }
+  if (!image) return 0;
+
+  int32_t yStride = 0, uvStride = 0, uvPixStride = 0, yLen = 0, uLen = 0,
+          vLen = 0;
+  uint8_t *yP = nullptr, *uP = nullptr, *vP = nullptr;
+  AImage_getPlaneRowStride(image, 0, &yStride);
+  AImage_getPlaneRowStride(image, 1, &uvStride);
+  AImage_getPlanePixelStride(image, 1, &uvPixStride);
+  AImage_getPlaneData(image, 0, &yP, &yLen);
+  AImage_getPlaneData(image, 1, &uP, &uLen);
+  AImage_getPlaneData(image, 2, &vP, &vLen);
+
+  int32_t out = 0;
+  for (int y = 0; y < cam->height; y++) {
+    const uint8_t* yr = yP + y * yStride;
+    const uint8_t* ur = uP + (y / 2) * uvStride;
+    const uint8_t* vr = vP + (y / 2) * uvStride;
+    for (int x = 0; x < cam->width; x++) {
+      if (out + 4 > dst_len) break;
+      const int Y = yr[x];
+      const int U = ur[(x / 2) * uvPixStride] - 128;
+      const int V = vr[(x / 2) * uvPixStride] - 128;
+      dst[out + 0] = clamp8(Y + ((443 * U) >> 8));                 // B
+      dst[out + 1] = clamp8(Y - ((179 * V + 86 * U) >> 8));        // G
+      dst[out + 2] = clamp8(Y + ((351 * V) >> 8));                 // R
+      dst[out + 3] = 255;                                          // X
+      out += 4;
+    }
+  }
+  AImage_delete(image);
+  return out;
+}
+
+void um_camera_close(um_camera* cam) {
+  if (!cam) return;
+  if (cam->session) {
+    ACameraCaptureSession_stopRepeating(cam->session);
+    ACameraCaptureSession_close(cam->session);
+  }
+  if (cam->request) ACaptureRequest_free(cam->request);
+  if (cam->target) ACameraOutputTarget_free(cam->target);
+  if (cam->output) ACaptureSessionOutput_free(cam->output);
+  if (cam->outputs) ACaptureSessionOutputContainer_free(cam->outputs);
+  if (cam->device) ACameraDevice_close(cam->device);
+  if (cam->window) ANativeWindow_release(cam->window);
+  if (cam->reader) AImageReader_delete(cam->reader);
+  if (cam->mgr) ACameraManager_delete(cam->mgr);
+  delete cam;
+}
+
+}  // extern "C"
+
 #elif defined(__linux__)  // --- V4L2 capture ---------------------------------
 
 #include <fcntl.h>

@@ -282,6 +282,107 @@ void um_mic_close(um_mic* mic) {
 
 }  // extern "C"
 
+#elif defined(__ANDROID__)  // --- AAudio capture ----------------------------
+// NB: Android also defines __linux__, so this branch must precede the ALSA one.
+// Requires the host app to hold the RECORD_AUDIO runtime permission.
+// AAudio has no NDK device enumeration, so only a single "Default" input is
+// exposed (device selection is a Java AudioManager concern).
+
+#include <aaudio/AAudio.h>
+
+#include <string>
+
+struct um_mic {
+  AAudioStream* stream = nullptr;
+  int32_t sampleRate = 0;
+  int32_t channels = 0;
+  int32_t bits = 16;
+};
+
+extern "C" {
+
+int32_t um_mic_count(void) { return 1; }
+
+int32_t um_mic_name(int32_t index, char* buf, int32_t buf_len) {
+  if (index != 0 || !buf || buf_len <= 0) return -1;
+  const char* name = "Default";
+  int32_t n = static_cast<int32_t>(strlen(name));
+  if (n > buf_len - 1) n = buf_len - 1;
+  memcpy(buf, name, static_cast<size_t>(n));
+  buf[n] = '\0';
+  return n;
+}
+
+int32_t um_mic_id(int32_t index, char* buf, int32_t buf_len) {
+  return um_mic_name(index, buf, buf_len);
+}
+
+um_mic* um_mic_open(int32_t index, int32_t sample_rate, int32_t channels) {
+  if (index != 0) return nullptr;
+  if (sample_rate <= 0) sample_rate = 48000;
+  if (channels <= 0) channels = 1;
+
+  AAudioStreamBuilder* builder = nullptr;
+  if (AAudio_createStreamBuilder(&builder) != AAUDIO_OK || !builder) {
+    return nullptr;
+  }
+  AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_INPUT);
+  AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
+  AAudioStreamBuilder_setChannelCount(builder, channels);
+  AAudioStreamBuilder_setSampleRate(builder, sample_rate);
+  AAudioStreamBuilder_setPerformanceMode(builder,
+                                         AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+
+  AAudioStream* stream = nullptr;
+  const aaudio_result_t rc = AAudioStreamBuilder_openStream(builder, &stream);
+  AAudioStreamBuilder_delete(builder);
+  if (rc != AAUDIO_OK || !stream) return nullptr;
+
+  if (AAudioStream_requestStart(stream) != AAUDIO_OK) {
+    AAudioStream_close(stream);
+    return nullptr;
+  }
+
+  auto* mic = new um_mic();
+  mic->stream = stream;
+  mic->sampleRate = AAudioStream_getSampleRate(stream);
+  mic->channels = AAudioStream_getChannelCount(stream);
+  mic->bits = 16;
+  return mic;
+}
+
+void um_mic_format(um_mic* mic, int32_t* sample_rate, int32_t* channels,
+                   int32_t* bits_per_sample) {
+  if (!mic) return;
+  if (sample_rate) *sample_rate = mic->sampleRate;
+  if (channels) *channels = mic->channels;
+  if (bits_per_sample) *bits_per_sample = mic->bits;
+}
+
+int32_t um_mic_read(um_mic* mic, uint8_t* dst, int32_t dst_len) {
+  if (!mic || !mic->stream || !dst) return -1;
+  const int frameBytes = mic->channels * (mic->bits / 8);
+  const int32_t frames = dst_len / frameBytes;
+  if (frames == 0) return 0;
+
+  // Block up to 200 ms for a buffer of samples.
+  const int32_t n =
+      AAudioStream_read(mic->stream, dst, frames, 200LL * 1000 * 1000);
+  if (n < 0) return -1;
+  return n * frameBytes;
+}
+
+void um_mic_close(um_mic* mic) {
+  if (!mic) return;
+  if (mic->stream) {
+    AAudioStream_requestStop(mic->stream);
+    AAudioStream_close(mic->stream);
+  }
+  delete mic;
+}
+
+}  // extern "C"
+
 #elif defined(__linux__)  // --- ALSA capture ----------------------------------
 
 #include <alsa/asoundlib.h>
