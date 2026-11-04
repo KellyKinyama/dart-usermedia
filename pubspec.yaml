@@ -3,7 +3,7 @@ description: >-
   A Dart port of pion/mediadevices: a getUserMedia / getDisplayMedia API with
   camera, microphone, and screen capture via native FFI drivers.
 version: 1.0.0
-# repository: https://github.com/my_org/dart_usermedia
+repository: https://github.com/kkinyama/dart-usermedia
 topics:
   - mediadevices
   - getusermedia

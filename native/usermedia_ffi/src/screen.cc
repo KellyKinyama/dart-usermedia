@@ -277,7 +277,147 @@ void um_screen_close(um_screen* scr) {
 
 }  // extern "C"
 
-#else  // --- non-Windows stub -------------------------------------------------
+#elif defined(__linux__)  // --- X11 capture -----------------------------------
+
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <vector>
+
+namespace {
+
+struct ScreenEntry {
+  std::string name;
+  int number;
+};
+
+std::mutex g_screens_mu;
+std::vector<ScreenEntry> g_screens;
+
+void RefreshScreens() {
+  std::vector<ScreenEntry> screens;
+  Display* dpy = XOpenDisplay(nullptr);
+  if (dpy) {
+    const int n = ScreenCount(dpy);
+    for (int i = 0; i < n; i++) {
+      screens.push_back({":screen" + std::to_string(i), i});
+    }
+    XCloseDisplay(dpy);
+  }
+  std::lock_guard<std::mutex> lk(g_screens_mu);
+  g_screens = std::move(screens);
+}
+
+int32_t CopyUtf8(const std::string& s, char* buf, int32_t buf_len) {
+  if (!buf || buf_len <= 0) return -1;
+  int32_t n = static_cast<int32_t>(s.size());
+  if (n > buf_len - 1) n = buf_len - 1;
+  memcpy(buf, s.data(), static_cast<size_t>(n));
+  buf[n] = '\0';
+  return n;
+}
+
+}  // namespace
+
+struct um_screen {
+  Display* dpy = nullptr;
+  Window root = 0;
+  int32_t width = 0;
+  int32_t height = 0;
+  int32_t size = 0;  // BGRA bytes = width*height*4
+};
+
+extern "C" {
+
+int32_t um_screen_count(void) {
+  RefreshScreens();
+  std::lock_guard<std::mutex> lk(g_screens_mu);
+  return static_cast<int32_t>(g_screens.size());
+}
+
+int32_t um_screen_name(int32_t index, char* buf, int32_t buf_len) {
+  std::lock_guard<std::mutex> lk(g_screens_mu);
+  if (index < 0 || index >= static_cast<int32_t>(g_screens.size())) return -1;
+  return CopyUtf8(g_screens[index].name, buf, buf_len);
+}
+
+int32_t um_screen_id(int32_t index, char* buf, int32_t buf_len) {
+  return um_screen_name(index, buf, buf_len);
+}
+
+um_screen* um_screen_open(int32_t index, int32_t /*width*/, int32_t /*height*/) {
+  int number = 0;
+  {
+    RefreshScreens();
+    std::lock_guard<std::mutex> lk(g_screens_mu);
+    if (index < 0 || index >= static_cast<int32_t>(g_screens.size())) {
+      return nullptr;
+    }
+    number = g_screens[index].number;
+  }
+
+  Display* dpy = XOpenDisplay(nullptr);
+  if (!dpy) return nullptr;
+  Screen* scr = ScreenOfDisplay(dpy, number);
+  if (!scr) {
+    XCloseDisplay(dpy);
+    return nullptr;
+  }
+
+  auto* s = new um_screen();
+  s->dpy = dpy;
+  s->root = RootWindowOfScreen(scr);
+  s->width = WidthOfScreen(scr);
+  s->height = HeightOfScreen(scr);
+  s->size = s->width * s->height * 4;
+  return s;
+}
+
+void um_screen_format(um_screen* scr, int32_t* width, int32_t* height,
+                      int32_t* size) {
+  if (!scr) return;
+  if (width) *width = scr->width;
+  if (height) *height = scr->height;
+  if (size) *size = scr->size;
+}
+
+int32_t um_screen_read(um_screen* scr, uint8_t* dst, int32_t dst_len) {
+  if (!scr || !scr->dpy || !dst) return -1;
+  XImage* img = XGetImage(scr->dpy, scr->root, 0, 0, scr->width, scr->height,
+                          AllPlanes, ZPixmap);
+  if (!img) return -1;
+
+  int32_t out = 0;
+  for (int y = 0; y < scr->height; y++) {
+    for (int x = 0; x < scr->width; x++) {
+      if (out + 4 > dst_len) {
+        XDestroyImage(img);
+        return out;
+      }
+      const unsigned long px = XGetPixel(img, x, y);
+      dst[out + 0] = (px & img->blue_mask) >> 0;    // B (typical 24/32-bit)
+      dst[out + 1] = (px & img->green_mask) >> 8;   // G
+      dst[out + 2] = (px & img->red_mask) >> 16;    // R
+      dst[out + 3] = 255;                            // A
+      out += 4;
+    }
+  }
+  XDestroyImage(img);
+  return out;
+}
+
+void um_screen_close(um_screen* scr) {
+  if (!scr) return;
+  if (scr->dpy) XCloseDisplay(scr->dpy);
+  delete scr;
+}
+
+}  // extern "C"
+
+#else  // --- other platforms stub ---------------------------------------------
 
 struct um_screen {};
 

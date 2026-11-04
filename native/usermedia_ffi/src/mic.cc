@@ -282,7 +282,156 @@ void um_mic_close(um_mic* mic) {
 
 }  // extern "C"
 
-#else  // --- non-Windows stub -------------------------------------------------
+#elif defined(__linux__)  // --- ALSA capture ----------------------------------
+
+#include <alsa/asoundlib.h>
+
+#include <mutex>
+#include <string>
+#include <vector>
+
+namespace {
+
+struct MicEntry {
+  std::string name;
+  std::string id;
+};
+
+std::mutex g_mics_mu;
+std::vector<MicEntry> g_mics;
+
+// ALSA capture PCM devices via the control interface. Always includes
+// "default" so a system with a configured default mic is usable.
+void RefreshDevices() {
+  std::vector<MicEntry> mics;
+  mics.push_back({"Default", "default"});
+
+  int card = -1;
+  while (snd_card_next(&card) == 0 && card >= 0) {
+    char* cardName = nullptr;
+    if (snd_card_get_name(card, &cardName) == 0 && cardName) {
+      std::string hw = "hw:" + std::to_string(card);
+      mics.push_back({cardName, hw});
+      free(cardName);
+    }
+  }
+
+  std::lock_guard<std::mutex> lk(g_mics_mu);
+  g_mics = std::move(mics);
+}
+
+int32_t CopyUtf8(const std::string& s, char* buf, int32_t buf_len) {
+  if (!buf || buf_len <= 0) return -1;
+  int32_t n = static_cast<int32_t>(s.size());
+  if (n > buf_len - 1) n = buf_len - 1;
+  memcpy(buf, s.data(), static_cast<size_t>(n));
+  buf[n] = '\0';
+  return n;
+}
+
+}  // namespace
+
+struct um_mic {
+  snd_pcm_t* pcm = nullptr;
+  int32_t sampleRate = 0;
+  int32_t channels = 0;
+  int32_t bits = 16;
+};
+
+extern "C" {
+
+int32_t um_mic_count(void) {
+  RefreshDevices();
+  std::lock_guard<std::mutex> lk(g_mics_mu);
+  return static_cast<int32_t>(g_mics.size());
+}
+
+int32_t um_mic_name(int32_t index, char* buf, int32_t buf_len) {
+  std::lock_guard<std::mutex> lk(g_mics_mu);
+  if (index < 0 || index >= static_cast<int32_t>(g_mics.size())) return -1;
+  return CopyUtf8(g_mics[index].name, buf, buf_len);
+}
+
+int32_t um_mic_id(int32_t index, char* buf, int32_t buf_len) {
+  std::lock_guard<std::mutex> lk(g_mics_mu);
+  if (index < 0 || index >= static_cast<int32_t>(g_mics.size())) return -1;
+  return CopyUtf8(g_mics[index].id, buf, buf_len);
+}
+
+um_mic* um_mic_open(int32_t index, int32_t sample_rate, int32_t channels) {
+  if (sample_rate <= 0) sample_rate = 48000;
+  if (channels <= 0) channels = 1;
+
+  std::string id;
+  {
+    RefreshDevices();
+    std::lock_guard<std::mutex> lk(g_mics_mu);
+    if (index < 0 || index >= static_cast<int32_t>(g_mics.size())) {
+      return nullptr;
+    }
+    id = g_mics[index].id;
+  }
+
+  snd_pcm_t* pcm = nullptr;
+  if (snd_pcm_open(&pcm, id.c_str(), SND_PCM_STREAM_CAPTURE, 0) < 0) {
+    return nullptr;
+  }
+  unsigned rate = static_cast<unsigned>(sample_rate);
+  if (snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE,
+                         SND_PCM_ACCESS_RW_INTERLEAVED,
+                         static_cast<unsigned>(channels), rate, 1,
+                         200000) < 0) {  // 200 ms latency
+    snd_pcm_close(pcm);
+    return nullptr;
+  }
+
+  auto* mic = new um_mic();
+  mic->pcm = pcm;
+  mic->sampleRate = static_cast<int32_t>(rate);
+  mic->channels = channels;
+  mic->bits = 16;
+  return mic;
+}
+
+void um_mic_format(um_mic* mic, int32_t* sample_rate, int32_t* channels,
+                   int32_t* bits_per_sample) {
+  if (!mic) return;
+  if (sample_rate) *sample_rate = mic->sampleRate;
+  if (channels) *channels = mic->channels;
+  if (bits_per_sample) *bits_per_sample = mic->bits;
+}
+
+int32_t um_mic_read(um_mic* mic, uint8_t* dst, int32_t dst_len) {
+  if (!mic || !mic->pcm || !dst) return -1;
+  const int frameBytes = mic->channels * (mic->bits / 8);
+  snd_pcm_uframes_t frames = dst_len / frameBytes;
+  if (frames == 0) return 0;
+
+  snd_pcm_sframes_t n = snd_pcm_readi(mic->pcm, dst, frames);
+  if (n == -EPIPE) {
+    snd_pcm_prepare(mic->pcm);  // recover from overrun
+    return 0;
+  }
+  if (n < 0) {
+    n = snd_pcm_recover(mic->pcm, static_cast<int>(n), 1);
+    if (n < 0) return -1;
+    return 0;
+  }
+  return static_cast<int32_t>(n) * frameBytes;
+}
+
+void um_mic_close(um_mic* mic) {
+  if (!mic) return;
+  if (mic->pcm) {
+    snd_pcm_drop(mic->pcm);
+    snd_pcm_close(mic->pcm);
+  }
+  delete mic;
+}
+
+}  // extern "C"
+
+#else  // --- other platforms stub ---------------------------------------------
 
 struct um_mic {};
 

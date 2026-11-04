@@ -305,7 +305,237 @@ void um_camera_close(um_camera* cam) {
 
 }  // extern "C"
 
-#else  // --- non-Windows stub -------------------------------------------------
+#elif defined(__linux__)  // --- V4L2 capture ---------------------------------
+
+#include <fcntl.h>
+#include <linux/videodev2.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <vector>
+
+namespace {
+
+int xioctl(int fd, unsigned long req, void* arg) {
+  int r;
+  do {
+    r = ioctl(fd, req, arg);
+  } while (r == -1 && errno == EINTR);
+  return r;
+}
+
+int clamp8(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
+
+struct DeviceEntry {
+  std::string name;
+  std::string path;
+};
+
+std::mutex g_devices_mu;
+std::vector<DeviceEntry> g_devices;
+
+void RefreshDevices() {
+  std::vector<DeviceEntry> devs;
+  for (int i = 0; i < 64; i++) {
+    std::string path = "/dev/video" + std::to_string(i);
+    int fd = open(path.c_str(), O_RDWR | O_NONBLOCK);
+    if (fd < 0) continue;
+    v4l2_capability cap{};
+    if (xioctl(fd, VIDIOC_QUERYCAP, &cap) == 0 &&
+        (cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)) {
+      DeviceEntry e;
+      e.name = reinterpret_cast<const char*>(cap.card);
+      e.path = path;
+      devs.push_back(std::move(e));
+    }
+    close(fd);
+  }
+  std::lock_guard<std::mutex> lk(g_devices_mu);
+  g_devices = std::move(devs);
+}
+
+int32_t CopyUtf8(const std::string& s, char* buf, int32_t buf_len) {
+  if (!buf || buf_len <= 0) return -1;
+  int32_t n = static_cast<int32_t>(s.size());
+  if (n > buf_len - 1) n = buf_len - 1;
+  memcpy(buf, s.data(), static_cast<size_t>(n));
+  buf[n] = '\0';
+  return n;
+}
+
+}  // namespace
+
+struct um_camera {
+  int fd = -1;
+  struct Buf {
+    void* start = nullptr;
+    size_t length = 0;
+  };
+  std::vector<Buf> buffers;
+  int32_t width = 0;
+  int32_t height = 0;
+  int32_t size = 0;  // RGB32 output bytes = width*height*4
+};
+
+extern "C" {
+
+int32_t um_camera_count(void) {
+  RefreshDevices();
+  std::lock_guard<std::mutex> lk(g_devices_mu);
+  return static_cast<int32_t>(g_devices.size());
+}
+
+int32_t um_camera_name(int32_t index, char* buf, int32_t buf_len) {
+  std::lock_guard<std::mutex> lk(g_devices_mu);
+  if (index < 0 || index >= static_cast<int32_t>(g_devices.size())) return -1;
+  return CopyUtf8(g_devices[index].name, buf, buf_len);
+}
+
+int32_t um_camera_id(int32_t index, char* buf, int32_t buf_len) {
+  std::lock_guard<std::mutex> lk(g_devices_mu);
+  if (index < 0 || index >= static_cast<int32_t>(g_devices.size())) return -1;
+  return CopyUtf8(g_devices[index].path, buf, buf_len);
+}
+
+um_camera* um_camera_open(int32_t index, int32_t width, int32_t height) {
+  std::string path;
+  {
+    RefreshDevices();
+    std::lock_guard<std::mutex> lk(g_devices_mu);
+    if (index < 0 || index >= static_cast<int32_t>(g_devices.size())) {
+      return nullptr;
+    }
+    path = g_devices[index].path;
+  }
+
+  int fd = open(path.c_str(), O_RDWR);
+  if (fd < 0) return nullptr;
+
+  v4l2_format fmt{};
+  fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  fmt.fmt.pix.width = width > 0 ? width : 640;
+  fmt.fmt.pix.height = height > 0 ? height : 480;
+  fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+  fmt.fmt.pix.field = V4L2_FIELD_ANY;
+  if (xioctl(fd, VIDIOC_S_FMT, &fmt) == -1 ||
+      fmt.fmt.pix.pixelformat != V4L2_PIX_FMT_YUYV) {
+    close(fd);
+    return nullptr;
+  }
+
+  v4l2_requestbuffers req{};
+  req.count = 4;
+  req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  req.memory = V4L2_MEMORY_MMAP;
+  if (xioctl(fd, VIDIOC_REQBUFS, &req) == -1 || req.count < 2) {
+    close(fd);
+    return nullptr;
+  }
+
+  auto* cam = new um_camera();
+  cam->fd = fd;
+  cam->width = static_cast<int32_t>(fmt.fmt.pix.width);
+  cam->height = static_cast<int32_t>(fmt.fmt.pix.height);
+  cam->size = cam->width * cam->height * 4;
+
+  for (unsigned i = 0; i < req.count; i++) {
+    v4l2_buffer b{};
+    b.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    b.memory = V4L2_MEMORY_MMAP;
+    b.index = i;
+    if (xioctl(fd, VIDIOC_QUERYBUF, &b) == -1) {
+      um_camera_close(cam);
+      return nullptr;
+    }
+    void* p = mmap(nullptr, b.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
+                   b.m.offset);
+    if (p == MAP_FAILED) {
+      um_camera_close(cam);
+      return nullptr;
+    }
+    cam->buffers.push_back({p, b.length});
+    if (xioctl(fd, VIDIOC_QBUF, &b) == -1) {
+      um_camera_close(cam);
+      return nullptr;
+    }
+  }
+
+  v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  if (xioctl(fd, VIDIOC_STREAMON, &type) == -1) {
+    um_camera_close(cam);
+    return nullptr;
+  }
+  return cam;
+}
+
+void um_camera_format(um_camera* cam, int32_t* width, int32_t* height,
+                      int32_t* size) {
+  if (!cam) return;
+  if (width) *width = cam->width;
+  if (height) *height = cam->height;
+  if (size) *size = cam->size;
+}
+
+int32_t um_camera_read(um_camera* cam, uint8_t* dst, int32_t dst_len) {
+  if (!cam || cam->fd < 0 || !dst) return -1;
+
+  v4l2_buffer b{};
+  b.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  b.memory = V4L2_MEMORY_MMAP;
+  // Block until a frame is dequeued.
+  for (int attempts = 0; attempts < 1000; attempts++) {
+    if (xioctl(cam->fd, VIDIOC_DQBUF, &b) == 0) break;
+    if (errno == EAGAIN) {
+      usleep(2000);
+      continue;
+    }
+    return -1;
+  }
+  if (b.index >= cam->buffers.size()) return -1;
+
+  // Convert YUYV (Y0 U Y1 V) to RGB32 / BGRX (B,G,R,X), matching Windows.
+  const uint8_t* yuyv = static_cast<const uint8_t*>(cam->buffers[b.index].start);
+  const int pixels = cam->width * cam->height;
+  int32_t out = 0;
+  for (int i = 0; i < pixels; i += 2) {
+    const int y0 = yuyv[0], u = yuyv[1], y1 = yuyv[2], v = yuyv[3];
+    yuyv += 4;
+    const int cu = u - 128, cv = v - 128;
+    for (const int yv : {y0, y1}) {
+      if (out + 4 > dst_len) break;
+      dst[out + 0] = clamp8(yv + ((443 * cu) >> 8));                 // B
+      dst[out + 1] = clamp8(yv - ((179 * cv + 86 * cu) >> 8));       // G
+      dst[out + 2] = clamp8(yv + ((351 * cv) >> 8));                 // R
+      dst[out + 3] = 255;                                            // X
+      out += 4;
+    }
+  }
+
+  xioctl(cam->fd, VIDIOC_QBUF, &b);  // requeue
+  return out;
+}
+
+void um_camera_close(um_camera* cam) {
+  if (!cam) return;
+  if (cam->fd >= 0) {
+    v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    xioctl(cam->fd, VIDIOC_STREAMOFF, &type);
+  }
+  for (auto& b : cam->buffers) {
+    if (b.start) munmap(b.start, b.length);
+  }
+  if (cam->fd >= 0) close(cam->fd);
+  delete cam;
+}
+
+}  // extern "C"
+
+#else  // --- other platforms stub ---------------------------------------------
 
 struct um_camera {};
 

@@ -1,0 +1,13 @@
+# Keep build/VCS/host artifacts out of the Docker build context.
+.git/
+.dart_tool/
+native/usermedia_ffi/build/
+build/
+third_party/
+*.dll
+*.lib
+*.obj
+*.pdb
+*.bmp
+*.h264
+PLAN.md

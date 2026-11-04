@@ -13,15 +13,18 @@ reached through `dart:ffi`.
 
 | Capability | Backend | Windows | macOS | Linux |
 | --- | --- | :-: | :-: | :-: |
-| Camera (`getUserMedia`) | Media Foundation | ✅ | — | — |
-| Microphone (`getUserMedia`) | WASAPI | ✅ | — | — |
-| Screen (`getDisplayMedia`) | DXGI Desktop Duplication | ✅ | — | — |
+| Camera (`getUserMedia`) | Media Foundation / V4L2 | ✅ | — | ✅ |
+| Microphone (`getUserMedia`) | WASAPI / ALSA | ✅ | — | ✅ |
+| Screen (`getDisplayMedia`) | DXGI Desktop Duplication / X11 | ✅ | — | ✅ |
 | H.264 encoding | Media Foundation MFT | ✅ | — | — |
 | Synthetic test drivers | pure Dart | ✅ | ✅ | ✅ |
 
-Non-Windows platforms compile the native shim as a no-op stub today (the pure
-Dart core and the test drivers still work); macOS/Linux capture backends are
-future work.
+Linux backends use V4L2 (camera, YUYV→RGB32), ALSA (microphone, PCM16), and
+X11 `XGetImage` (screen, BGRA). Build the `.so` with
+[native/scripts/build-linux.sh](native/scripts/build-linux.sh) (needs
+`build-essential cmake libasound2-dev libx11-dev`). macOS and H.264 encoding on
+Linux remain future work; where a backend is absent the shim compiles as a
+no-op stub and the pure-Dart core + test drivers still work.
 
 ## Usage
 
@@ -113,6 +116,27 @@ This builds `native/usermedia_ffi/build/usermedia_ffi.dll`, which the loader
 discovers automatically. You can also point the loader at a prebuilt library
 with the `USERMEDIA_FFI_PATH` environment variable.
 
+On Linux, use [native/scripts/build-linux.sh](native/scripts/build-linux.sh)
+(needs `build-essential cmake libasound2-dev libx11-dev`).
+
+### Docker
+
+The [Dockerfile](Dockerfile) builds the Linux `.so` and runs the Dart suite on
+Linux (`dart:stable` provides the SDK headers):
+
+```bash
+docker build -t dart-usermedia .
+docker run --rm dart-usermedia           # enumerate devices (headless-safe)
+```
+
+To exercise real capture on a Linux host, pass the devices/display:
+
+```bash
+docker run --rm --device /dev/video0 --device /dev/snd \
+  -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix dart-usermedia \
+  dart run example/enumerate_devices.dart
+```
+
 ## Testing
 
 ```powershell
@@ -141,3 +165,8 @@ H264Encoder --------------------------------> usermedia_ffi (Media Foundation MF
 ```
 
 See [PLAN.md](PLAN.md) for the full porting plan and phase breakdown.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Portions are ported from
+[pion/mediadevices](https://github.com/pion/mediadevices), also MIT licensed.

@@ -99,6 +99,14 @@ if(WIN32)
   # DXGI Desktop Duplication (screen.cc) + H.264 encoder MFT (encoder.cc).
   target_link_libraries(usermedia_ffi PRIVATE
     mfplat mf mfreadwrite mfuuid wmcodecdspuuid shlwapi ole32 d3d11 dxgi)
+elseif(UNIX AND NOT APPLE)
+  # V4L2 (camera.cc, headers-only via libc) + ALSA (mic.cc) + X11 (screen.cc).
+  find_package(ALSA REQUIRED)
+  find_package(X11 REQUIRED)
+  target_include_directories(usermedia_ffi PRIVATE
+    ${ALSA_INCLUDE_DIRS} ${X11_INCLUDE_DIR})
+  target_link_libraries(usermedia_ffi PRIVATE
+    ${ALSA_LIBRARIES} ${X11_LIBRARIES} pthread dl)
 endif()
 
 if(HAVE_WEBRTC)
