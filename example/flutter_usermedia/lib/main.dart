@@ -157,13 +157,27 @@ class _HomePageState extends State<HomePage> {
       ),
       body: _libError != null
           ? _LibErrorView(error: _libError!)
-          : Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                SizedBox(width: 300, child: _sidebar()),
-                const VerticalDivider(width: 1),
-                Expanded(child: _preview()),
-              ],
+          : LayoutBuilder(
+              builder: (context, constraints) {
+                final wide = constraints.maxWidth >= 720;
+                if (wide) {
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      SizedBox(width: 300, child: _sidebar()),
+                      const VerticalDivider(width: 1),
+                      Expanded(child: _preview()),
+                    ],
+                  );
+                }
+                return Column(
+                  children: [
+                    Expanded(flex: 3, child: _preview()),
+                    const Divider(height: 1),
+                    Expanded(flex: 2, child: _sidebar()),
+                  ],
+                );
+              },
             ),
     );
   }

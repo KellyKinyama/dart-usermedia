@@ -39,6 +39,13 @@ and requested at runtime via `permission_handler`.
 flutter run -d emulator-5554        # or a connected phone
 ```
 
+**Emulator camera:** a new AVD defaults its camera to `emulated` (a synthetic
+scene) or `none`, so the Camera source shows nothing real. To use your PC
+webcam, set the AVD's `hw.camera.back`/`hw.camera.front` to `webcam0` (see
+`emulator -webcam-list`) or launch with `-camera-back webcam0`. If the feed is
+rotated, adjust `hw.camera.back.orientation` (0/90/180/270) — some host webcams
+need `180`.
+
 ### Windows / Linux
 
 Build the desktop library and point the loader at it (it also checks the
