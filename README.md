@@ -13,14 +13,14 @@ reached through `dart:ffi`.
 
 | Capability | Backend | Windows | macOS | Linux | Android |
 | --- | --- | :-: | :-: | :-: | :-: |
-| Camera (`getUserMedia`) | MF / V4L2 / Camera2 NDK | ✅ | — | ✅ | 🔨 |
-| Microphone (`getUserMedia`) | WASAPI / ALSA / AAudio | ✅ | — | ✅ | 🔨 |
+| Camera (`getUserMedia`) | MF / V4L2 / Camera2 NDK | ✅ | — | ✅ | � |
+| Microphone (`getUserMedia`) | WASAPI / ALSA / AAudio | ✅ | — | ✅ | 🔸 |
 | Screen (`getDisplayMedia`) | DXGI / X11 / — | ✅ | — | ✅ | — |
 | H.264 encoding | Media Foundation MFT | ✅ | — | — | — |
 | Synthetic test drivers | pure Dart | ✅ | ✅ | ✅ | ✅ |
 
-✅ = verified with real capture · 🔨 = builds + links, not yet runtime-tested
-· — = not implemented.
+✅ = verified with real capture · 🔸 = runs on-device (enumerate + open), full
+frame capture needs an app with permissions · — = not implemented.
 
 Linux backends use V4L2 (camera, YUYV→RGB32), ALSA (microphone, PCM16), and
 X11 `XGetImage` (screen, BGRA). Build the `.so` with
@@ -32,7 +32,15 @@ Android backends use NDK **Camera2** (camera, YUV_420_888→RGB32) and **AAudio*
 so it's unimplemented. The host app must hold the `CAMERA` / `RECORD_AUDIO`
 runtime permissions before opening a device. Cross-compile the per-ABI `.so`
 with [native/scripts/build-android.ps1](native/scripts/build-android.ps1)
-(needs the Android NDK). macOS and H.264 encoding on
+(needs the Android NDK).
+
+Runtime-validated on an Android 14 x86_64 emulator via
+[native/usermedia_ffi/tools/android_probe.c](native/usermedia_ffi/tools/android_probe.c)
+pushed over `adb`: the `.so` loads, Camera2 **enumerates and opens** a device
+(the CameraService accepts the client and configures the capture session) and
+AAudio enumerates. Actual frame delivery needs an app context with `CAMERA`
+permission on a camera-backed device (a headless-emulator synthetic camera does
+not stream buffers to a raw `adb shell` process). macOS and H.264 encoding on
 Linux remain future work; where a backend is absent the shim compiles as a
 no-op stub and the pure-Dart core + test drivers still work.
 
