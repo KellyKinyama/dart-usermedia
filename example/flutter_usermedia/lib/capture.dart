@@ -14,8 +14,8 @@ enum VideoSource { camera, videotest, screen }
 
 // --- Video ------------------------------------------------------------------
 
-void _videoIsolate((SendPort, String) args) {
-  final (toMain, kind) = args;
+void _videoIsolate((SendPort, String, int) args) {
+  final (toMain, kind, cameraIndex) = args;
   final control = ReceivePort();
   toMain.send(control.sendPort);
   var running = true;
@@ -24,9 +24,17 @@ void _videoIsolate((SendPort, String) args) {
   });
 
   try {
+    String? camDeviceId;
     switch (kind) {
       case 'camera':
-        registerCameras();
+        final ids = registerCameras();
+        if (cameraIndex >= 0 && cameraIndex < ids.length) {
+          final driver = Manager.instance.query(filterId(ids[cameraIndex]));
+          if (driver.isNotEmpty) {
+            final props = driver.single.properties();
+            if (props.isNotEmpty) camDeviceId = props.first.deviceId;
+          }
+        }
       case 'screen':
         registerScreens();
       default:
@@ -37,6 +45,9 @@ void _videoIsolate((SendPort, String) args) {
         ? getDisplayMedia(MediaStreamConstraints(video: (c) {}))
         : getUserMedia(MediaStreamConstraints(
             video: (c) {
+              if (camDeviceId != null) {
+                c.deviceId = StringExact(camDeviceId);
+              }
               c.video.width = const IntIdeal(640);
               c.video.height = const IntIdeal(480);
             },
@@ -81,7 +92,7 @@ class VideoCapture {
 
   Stream<ui.Image> get frames => _frames.stream;
 
-  Future<void> start(VideoSource source) async {
+  Future<void> start(VideoSource source, {int cameraIndex = 0}) async {
     error = null;
     _recv = ReceivePort();
     _recv!.listen((m) async {
@@ -99,7 +110,8 @@ class VideoCapture {
         _kill();
       }
     });
-    _iso = await Isolate.spawn(_videoIsolate, (_recv!.sendPort, source.name));
+    _iso = await Isolate.spawn(
+        _videoIsolate, (_recv!.sendPort, source.name, cameraIndex));
   }
 
   Future<void> stop() async {

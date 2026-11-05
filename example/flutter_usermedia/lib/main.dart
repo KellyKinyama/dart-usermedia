@@ -34,6 +34,8 @@ class _HomePageState extends State<HomePage> {
 
   String? _libError;
   List<MediaDeviceInfo> _devices = const [];
+  List<MediaDeviceInfo> _cameras = const [];
+  int _cameraIndex = 0;
   VideoSource? _active;
   bool _micOn = false;
 
@@ -65,6 +67,10 @@ class _HomePageState extends State<HomePage> {
       if (_desktop) registerScreens();
       setState(() {
         _devices = enumerateDevices();
+        _cameras = _devices
+            .where((d) => d.kind == MediaDeviceType.videoInput)
+            .toList();
+        if (_cameraIndex >= _cameras.length) _cameraIndex = 0;
         _libError = null;
       });
     } catch (e) {
@@ -111,7 +117,31 @@ class _HomePageState extends State<HomePage> {
         }
       },
     );
-    await _video.start(source);
+    final cameraIndex =
+        source == VideoSource.camera && _cameras.isNotEmpty ? _cameraIndex : 0;
+    await _video.start(source, cameraIndex: cameraIndex);
+  }
+
+  Future<void> _switchCamera() async {
+    if (_cameras.length < 2) return;
+    setState(() => _cameraIndex = (_cameraIndex + 1) % _cameras.length);
+    await _startVideo(VideoSource.camera);
+  }
+
+  Future<void> _snapshot() async {
+    final img = _frame;
+    if (img == null) return;
+    try {
+      final data = await img.toByteData(format: ui.ImageByteFormat.png);
+      if (data == null) return;
+      final dir = Directory.systemTemp;
+      final path =
+          '${dir.path}/usermedia_${DateTime.now().millisecondsSinceEpoch}.png';
+      await File(path).writeAsBytes(data.buffer.asUint8List());
+      _toast('Saved snapshot: $path');
+    } catch (e) {
+      _toast('Snapshot failed: $e');
+    }
   }
 
   Future<void> _stopVideo() async {
@@ -203,11 +233,31 @@ class _HomePageState extends State<HomePage> {
           ],
         ),
         const SizedBox(height: 8),
+        if (_active == VideoSource.camera && _cameras.isNotEmpty)
+          Text('Camera: ${_cameras[_cameraIndex].label}',
+              style: Theme.of(context).textTheme.bodySmall),
         if (_active != null)
-          FilledButton.tonalIcon(
-            onPressed: _stopVideo,
-            icon: const Icon(Icons.stop),
-            label: const Text('Stop'),
+          Wrap(
+            spacing: 8,
+            children: [
+              FilledButton.tonalIcon(
+                onPressed: _stopVideo,
+                icon: const Icon(Icons.stop),
+                label: const Text('Stop'),
+              ),
+              if (_active == VideoSource.camera && _cameras.length > 1)
+                FilledButton.tonalIcon(
+                  onPressed: _switchCamera,
+                  icon: const Icon(Icons.cameraswitch),
+                  label: const Text('Switch'),
+                ),
+              if (_frame != null)
+                FilledButton.tonalIcon(
+                  onPressed: _snapshot,
+                  icon: const Icon(Icons.photo_camera),
+                  label: const Text('Snapshot'),
+                ),
+            ],
           ),
         const Divider(height: 32),
         Row(
